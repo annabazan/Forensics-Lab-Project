@@ -1,0 +1,21 @@
+[project]
+name = "forensics-lab-project"
+version = "0.1.0"
+description = "Auto-detecting RAID forensic data extraction from E01 images"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = []
+
+[project.scripts]
+detect-raids = "detect_and_extract_raids:main"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+only-include = ["detect_and_extract_raids.py"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
