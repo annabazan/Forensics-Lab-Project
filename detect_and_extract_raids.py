@@ -25,6 +25,7 @@ import sys
 import tempfile
 
 
+
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
 def run(cmd, **kwargs):
@@ -189,26 +190,100 @@ def reconstruct_raid5_left_symmetric(disk_files, chunk_bytes, data_offset_bytes,
 # ─── Partition table parsing ───────────────────────────────────────────────
 
 def get_partitions(raw_path):
-    """Parse mmls output to find data partitions."""
+    """Parse partition table via mmls, with pure-Python GPT fallback."""
+    parts = _get_partitions_mmls(raw_path)
+    if parts:
+        return parts
+    return _get_partitions_gpt(raw_path)
+
+
+def _get_partitions_mmls(raw_path):
     rc, out, _ = run(["mmls", "-i", "raw", raw_path])
     if rc != 0:
         return []
-
     parts = []
     for line in out.decode(errors='replace').splitlines():
         line = line.strip()
         if not line or 'Unallocated' in line or 'Meta' in line:
             continue
-        # Match: "002:  000:000   0000000063   0016771859   0016771797   Description"
         m = re.match(r'\d+:\s+\S+\s+(\d+)\s+(\d+)\s+(\d+)\s+(.*)', line)
         if m:
             parts.append({
-                'start': int(m.group(1)),
-                'end': int(m.group(2)),
+                'start':  int(m.group(1)),
+                'end':    int(m.group(2)),
                 'length': int(m.group(3)),
-                'desc': m.group(4).strip(),
+                'desc':   m.group(4).strip(),
             })
     return parts
+
+
+def _get_partitions_gpt(raw_path):
+    """GPT parser — no external tools needed.
+
+    GPT layout:
+      LBA 0  = Protective MBR
+      LBA 1  = GPT Header
+        +0:  signature "EFI PART" (8 bytes)
+        +72: number of partition entries (LE32)
+        +80: size of each entry (LE32)
+      LBA 2+ = Partition entries (128 bytes each by default)
+        +0:  type GUID (16 bytes) — all zeros = unused
+        +32: start LBA (LE64)
+        +40: end LBA (LE64)
+        +56: name (72 bytes UTF-16LE)
+    """
+    try:
+        with open(raw_path, 'rb') as f:
+            # GPT header at LBA 1
+            f.seek(512)
+            header = f.read(512)
+
+        if header[:8] != b'EFI PART':
+            return []
+
+        num_entries  = struct.unpack_from('<I', header, 80)[0]
+        entry_size   = struct.unpack_from('<I', header, 84)[0]
+        entries_lba  = struct.unpack_from('<Q', header, 72)[0]
+
+        if entry_size == 0 or num_entries > 128:
+            return []
+
+        with open(raw_path, 'rb') as f:
+            f.seek(entries_lba * 512)
+            entries_data = f.read(num_entries * entry_size)
+
+        parts = []
+        for i in range(num_entries):
+            entry = entries_data[i * entry_size:(i + 1) * entry_size]
+            if len(entry) < 56:
+                continue
+
+            type_guid = entry[0:16]
+            if type_guid == b'\x00' * 16:
+                continue  # unused entry
+
+            start_lba = struct.unpack_from('<Q', entry, 32)[0]
+            end_lba   = struct.unpack_from('<Q', entry, 40)[0]
+            length    = end_lba - start_lba + 1
+
+            try:
+                name = entry[56:128].decode('utf-16-le').rstrip('\x00')
+            except UnicodeDecodeError:
+                name = ''
+
+            parts.append({
+                'start':  start_lba,
+                'end':    end_lba,
+                'length': length,
+                'desc':   name,
+            })
+
+        return parts
+
+    except (OSError, struct.error):
+        return []
+
+
 
 
 # ─── Filesystem detection ──────────────────────────────────────────────────
@@ -242,45 +317,67 @@ def detect_filesystem(raw_path):
 # ─── Probes ────────────────────────────────────────────────────────────────
 
 def probe_md(raw_path):
-    """Check for Linux md superblock v1.2 at offset 4096.
+    """Check for Linux md superblock v1.x at multiple possible offsets."""
 
-    mdp_superblock_1 layout (all little-endian):
-      +0:   magic (0xa92b4efc)
-      +4:   major_version (1)
-      +16:  set_uuid[16]
-      +72:  level (0=RAID0, 1=RAID1, 5=RAID5, ...)
-      +76:  layout (2=left-symmetric for RAID5)
-      +88:  chunksize (in 512-byte sectors)
-      +92:  raid_disks
-      +128: data_offset (sectors)
-      +136: data_size (sectors)
-      +160: dev_number
-      +220: max_dev
-      +256: dev_roles[max_dev] (LE16 each)
-    """
+    result = _read_md_superblock(raw_path, byte_offset=4096)
+    if result:
+        return result
+
+    parts = get_partitions(raw_path)
+    for p in parts:
+        part_byte_offset = p['start'] * 512 + 4096
+        result = _read_md_superblock(raw_path, byte_offset=part_byte_offset)
+        if result:
+            result['partition_byte_offset'] = p['start'] * 512
+            return result
+
+    try:
+        file_size = os.path.getsize(raw_path)
+    except OSError:
+        return None
+
+    scan_limit = min(32 * 1024 * 1024, file_size)
+    step = 512 * 512  # 256 KiB
+
+    for offset in range(step, scan_limit, step):
+        result = _read_md_superblock(raw_path, byte_offset=offset + 4096)
+        if result:
+            result['partition_byte_offset'] = offset
+            return result
+
+    return None
+
+
+
+def _read_md_superblock(raw_path, byte_offset):
+    """Read and parse md superblock v1.2 at given byte offset."""
     try:
         with open(raw_path, 'rb') as f:
-            f.seek(4096)
+            f.seek(byte_offset)
             sb = f.read(512)
+
+        if len(sb) < 512:
+            return None
 
         magic = struct.unpack_from('<I', sb, 0)[0]
         if magic != 0xa92b4efc:
             return None
 
-        set_uuid = sb[16:32]
-        level = struct.unpack_from('<I', sb, 72)[0]
-        layout = struct.unpack_from('<I', sb, 76)[0]
+        set_uuid     = sb[16:32]
+        level        = struct.unpack_from('<I', sb, 72)[0]
+        layout       = struct.unpack_from('<I', sb, 76)[0]
         chunk_sectors = struct.unpack_from('<I', sb, 88)[0]
-        raid_disks = struct.unpack_from('<I', sb, 92)[0]
-        data_offset = struct.unpack_from('<Q', sb, 128)[0]
-        data_size = struct.unpack_from('<Q', sb, 136)[0]
-        dev_number = struct.unpack_from('<I', sb, 160)[0]
-        max_dev = struct.unpack_from('<I', sb, 220)[0]
+        raid_disks   = struct.unpack_from('<I', sb, 92)[0]
+        data_offset  = struct.unpack_from('<Q', sb, 128)[0]
+        data_size    = struct.unpack_from('<Q', sb, 136)[0]
+        dev_number   = struct.unpack_from('<I', sb, 160)[0]
+        max_dev      = struct.unpack_from('<I', sb, 220)[0]
 
         with open(raw_path, 'rb') as f:
-            f.seek(4096 + 256)
+            f.seek(byte_offset + 256)
             roles_raw = f.read(max_dev * 2)
-        roles = [struct.unpack_from('<H', roles_raw, i * 2)[0] for i in range(max_dev)]
+        roles = [struct.unpack_from('<H', roles_raw, i * 2)[0]
+                 for i in range(max_dev)]
         role = roles[dev_number] if dev_number < len(roles) else 0xFFFF
 
         uuid_hex = set_uuid.hex()
@@ -288,18 +385,20 @@ def probe_md(raw_path):
                     f"-{uuid_hex[16:20]}-{uuid_hex[20:]}")
 
         return {
-            'uuid': uuid_str,
-            'level': level,
-            'layout': layout,
-            'chunk_sectors': chunk_sectors,
-            'raid_disks': raid_disks,
+            'uuid':                uuid_str,
+            'level':               level,
+            'layout':              layout,
+            'chunk_sectors':       chunk_sectors,
+            'raid_disks':          raid_disks,
             'data_offset_sectors': data_offset,
-            'data_size_sectors': data_size,
-            'dev_number': dev_number,
-            'role': role,
+            'data_size_sectors':   data_size,
+            'dev_number':          dev_number,
+            'role':                role,
+            'sb_byte_offset':      byte_offset,
         }
     except (OSError, struct.error):
         return None
+
 
 
 def _find_guid(data):
@@ -715,7 +814,9 @@ def handle_md_group(uuid_str, disks, output_dir, keep_raw):
     raid_disks = d0['raid_disks']
     data_offset = d0['data_offset_sectors']
     data_size = d0['data_size_sectors']
-
+    partition_base    = d0.get('partition_byte_offset', 0)
+    data_offset_bytes = partition_base + data_offset * 512
+    
     label = f"md_{uuid_str[:8]}"
     out = os.path.join(output_dir, label)
     ensure_dir(out)
@@ -759,7 +860,7 @@ def handle_md_group(uuid_str, disks, output_dir, keep_raw):
     reconstruct_raid5_left_symmetric(
         disk_files=ordered_raw,
         chunk_bytes=chunk_sectors * 512,
-        data_offset_bytes=data_offset * 512,
+        data_offset_bytes=data_offset_bytes,
         data_size_sectors=data_size,
         output_path=raid_img,
         missing_disk_idx=missing_idx,

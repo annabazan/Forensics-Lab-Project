@@ -9,6 +9,7 @@
 #   standalone_fat32      — single disk, whole-device FAT32
 #   hardware_raid5        — 3-disk RAID 5 with superblock wiped (no metadata)
 #   mixed                 — RAID + standalone E01s in one directory
+#   gpt                   - RAID + gpt partition table
 #
 # Usage: sudo ./gen_test_data.sh [output_dir]
 # Dependencies: mdadm, ewfacquire (libewf), mkfs.ext4, mkfs.fat, sfdisk
@@ -318,6 +319,71 @@ gen_mixed() {
     echo "[+] $name: $count E01 files (mixed types) → $case_dir"
 }
 
+gen_md_raid5_gpt() {
+    local name="md_raid5_gpt"
+    local case_dir="$OUT/$name"
+    local md_dev mnt="$WORK/mnt_${name}"
+    md_dev=$(next_md)
+
+    banner "$name — GPT on disks + RAID5 on partitions"
+
+    local devs=() raws=() letters=(A B C)
+
+    # ===== create raw disks + attach loop =====
+    for i in 0 1 2; do
+        local raw="$WORK/${name}_${letters[$i]}.raw"
+        truncate -s "${DISK_MB}M" "$raw"
+        raws+=("$raw")
+
+        devs+=("$(lo_attach "$raw")")
+    done
+
+    # ===== GPT on EACH disk (before RAID) =====
+    local parts=()
+    for dev in "${devs[@]}"; do
+        sgdisk -Z "$dev"
+        sgdisk -o "$dev"
+        sgdisk -n 1:2048:0 -t 1:fd00 "$dev"
+
+        partprobe "$dev"
+
+        local part="${dev}p1"
+        for _ in $(seq 1 20); do
+            [ -b "$part" ] && break
+            sleep 0.3
+        done
+
+        [ -b "$part" ] || die "Partition not found on $dev"
+        parts+=("$part")
+    done
+
+    # ===== RAID on partitions =====
+    md_create "$md_dev" --level=5 --raid-devices=3 --chunk=512 "${parts[@]}"
+    mdadm --wait "$md_dev" 2>/dev/null || true
+
+    # ===== filesystem on RAID device =====
+    mkfs.ext4 -q "$md_dev"
+    mount_fs "$md_dev" "$mnt"
+
+    populate "$mnt"
+    umount_fs "$mnt"
+
+    md_stop "$md_dev"
+
+    # ===== detach loops =====
+    for d in "${devs[@]}"; do
+        lo_detach "$d"
+    done
+
+    # ===== export artifacts =====
+    mkdir -p "$case_dir"
+    for i in 0 1 2; do
+        to_e01 "${raws[$i]}" "$case_dir/disk_${letters[$i]}"
+    done
+
+    echo "[+] $name: GPT → RAID + md device → $case_dir"
+}
+
 # ─── Main ─────────────────────────────────────────────────────────────────
 
 main() {
@@ -337,6 +403,7 @@ main() {
     gen_standalone_fat32
     gen_hardware_raid5
     gen_mixed
+    gen_md_raid5_gpt
 
     # chown output to the invoking user (not root)
     if [ -n "${SUDO_USER:-}" ]; then
