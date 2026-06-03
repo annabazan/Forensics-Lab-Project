@@ -224,8 +224,9 @@ def _get_partitions_gpt(raw_path):
       LBA 0  = Protective MBR
       LBA 1  = GPT Header
         +0:  signature "EFI PART" (8 bytes)
-        +72: number of partition entries (LE32)
-        +80: size of each entry (LE32)
+        +72: partition entry start LBA (LE64)
+        +80: number of partition entries (LE32)
+        +84: size of each entry (LE32)
       LBA 2+ = Partition entries (128 bytes each by default)
         +0:  type GUID (16 bytes) — all zeros = unused
         +32: start LBA (LE64)
@@ -282,8 +283,6 @@ def _get_partitions_gpt(raw_path):
 
     except (OSError, struct.error):
         return []
-
-
 
 
 # ─── Filesystem detection ──────────────────────────────────────────────────
@@ -348,7 +347,6 @@ def probe_md(raw_path):
     return None
 
 
-
 def _read_md_superblock(raw_path, byte_offset):
     """Read and parse md superblock v1.2 at given byte offset."""
     try:
@@ -398,7 +396,6 @@ def _read_md_superblock(raw_path, byte_offset):
         }
     except (OSError, struct.error):
         return None
-
 
 
 def _find_guid(data):
@@ -816,7 +813,7 @@ def handle_md_group(uuid_str, disks, output_dir, keep_raw):
     data_size = d0['data_size_sectors']
     partition_base    = d0.get('partition_byte_offset', 0)
     data_offset_bytes = partition_base + data_offset * 512
-    
+
     label = f"md_{uuid_str[:8]}"
     out = os.path.join(output_dir, label)
     ensure_dir(out)

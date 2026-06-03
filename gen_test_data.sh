@@ -388,7 +388,7 @@ gen_md_raid5_gpt() {
 
 main() {
     [ "$(id -u)" -eq 0 ] || die "Must run as root (sudo ./gen_test_data.sh)"
-    require mdadm ewfacquire mkfs.ext4 mkfs.fat sfdisk losetup partprobe
+    require mdadm ewfacquire mkfs.ext4 mkfs.fat sfdisk sgdisk losetup partprobe
 
     echo "[*] Generating test data for detect_and_extract_raids"
     echo "[*] Output: $OUT"
