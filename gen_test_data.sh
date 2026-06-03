@@ -8,6 +8,8 @@
 #   standalone_ext4       — single disk, MBR partition table, ext4
 #   standalone_fat32      — single disk, whole-device FAT32
 #   hardware_raid5        — 3-disk RAID 5 with superblock wiped (no metadata)
+#   hardware_raid0        — 3-disk RAID 0 with superblock wiped (no metadata)
+#   hardware_raid1        — 2-disk RAID 1 with superblock wiped (no metadata)
 #   mixed                 — RAID + standalone E01s in one directory
 #   gpt                   - RAID + gpt partition table
 #
@@ -287,6 +289,86 @@ gen_hardware_raid5() {
     echo "    Tool will classify as 'unknown' — needs manual RAID params"
 }
 
+gen_hardware_raid0() {
+    local name="hardware_raid0"
+    local case_dir="$OUT/$name"
+    local md_dev mnt="$WORK/mnt_${name}"
+    md_dev=$(next_md)
+
+    banner "$name — 3-disk RAID 0, superblock wiped (no metadata)"
+
+    local devs=() raws=() letters=(A B C)
+    for i in 0 1 2; do
+        local raw="$WORK/${name}_${letters[$i]}.raw"
+        truncate -s "${DISK_MB}M" "$raw"
+        raws+=("$raw")
+        devs+=("$(lo_attach "$raw")")
+    done
+
+    md_create "$md_dev" --level=0 --raid-devices=3 --chunk=64 "${devs[@]}"
+
+    mkfs.ext4 -q "$md_dev"
+    mount_fs "$md_dev" "$mnt"
+    populate "$mnt"
+    umount_fs "$mnt"
+    md_stop "$md_dev"
+
+    # Wipe md superblocks — simulates hardware RAID controller images
+    for dev in "${devs[@]}"; do
+        mdadm --zero-superblock "$dev" 2>/dev/null || true
+    done
+
+    for i in 0 1 2; do lo_detach "${devs[$i]}"; done
+
+    mkdir -p "$case_dir"
+    for i in 0 1 2; do
+        to_e01 "${raws[$i]}" "$case_dir/disk_${letters[$i]}"
+    done
+
+    echo "[+] $name: 3 E01 files (no RAID metadata) → $case_dir"
+}
+
+gen_hardware_raid1() {
+    local name="hardware_raid1"
+    local case_dir="$OUT/$name"
+    local md_dev mnt="$WORK/mnt_${name}"
+    md_dev=$(next_md)
+
+    banner "$name — 2-disk RAID 1, superblock wiped (no metadata)"
+
+    local devs=() raws=() letters=(A B)
+    for i in 0 1; do
+        local raw="$WORK/${name}_${letters[$i]}.raw"
+        truncate -s "${DISK_MB}M" "$raw"
+        raws+=("$raw")
+        devs+=("$(lo_attach "$raw")")
+    done
+
+    md_create "$md_dev" --level=1 --raid-devices=2 "${devs[@]}"
+    mdadm --wait "$md_dev" 2>/dev/null || true
+
+    mkfs.ext4 -q "$md_dev"
+    mount_fs "$md_dev" "$mnt"
+    populate "$mnt"
+    umount_fs "$mnt"
+    md_stop "$md_dev"
+
+    # Wipe md superblocks
+    for dev in "${devs[@]}"; do
+        mdadm --zero-superblock "$dev" 2>/dev/null || true
+    done
+
+    for i in 0 1; do lo_detach "${devs[$i]}"; done
+
+    mkdir -p "$case_dir"
+    for i in 0 1; do
+        to_e01 "${raws[$i]}" "$case_dir/disk_${letters[$i]}"
+    done
+
+    echo "[+] $name: 2 E01 files (no RAID metadata) → $case_dir"
+    echo "    Note: each disk has full FS at sector 2048 — may classify as standalone"
+}
+
 gen_mixed() {
     local name="mixed"
     local case_dir="$OUT/$name"
@@ -402,6 +484,8 @@ main() {
     gen_standalone_ext4
     gen_standalone_fat32
     gen_hardware_raid5
+    gen_hardware_raid0
+    gen_hardware_raid1
     gen_mixed
     gen_md_raid5_gpt
 
