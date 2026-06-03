@@ -693,11 +693,11 @@ def _parse_vblk_partition(body, records):
 # ─── RAID Disk Order Detection ─────────────────────────────────────────────
 
 def _test_raid5_order(ordered_paths, chunk_bytes, data_offset_bytes, n_disks):
-    """Reconstruct first ~2 MiB of RAID and check for valid filesystem."""
+    """Reconstruct first ~16 MiB of RAID and check for valid filesystem."""
     n_data = n_disks - 1
     if n_data * chunk_bytes == 0:
         return False
-    test_stripes = max(n_disks * 2, 2 * 1024 * 1024 // (n_data * chunk_bytes))
+    test_stripes = max(n_disks * 2, 16 * 1024 * 1024 // (n_data * chunk_bytes))
 
     # Pre-open files to avoid repeated open/close
     fds = {}
@@ -732,7 +732,10 @@ def _test_raid5_order(ordered_paths, chunk_bytes, data_offset_bytes, n_disks):
                         out.write(chunk)
 
         rc, _, _ = run(["fsstat", "-i", "raw", "-o", "0", tmp_path])
-        return rc == 0
+        if rc != 0:
+            return False
+        rc2, fls_out, _ = run(["fls", "-i", "raw", "-o", "0", tmp_path])
+        return rc2 == 0 and len(fls_out) > 0
     except OSError:
         return False
     finally:
@@ -745,10 +748,10 @@ def _test_raid5_order(ordered_paths, chunk_bytes, data_offset_bytes, n_disks):
 
 
 def _test_raid0_order(ordered_paths, chunk_bytes, data_offset_bytes, n_disks):
-    """Reconstruct first ~2 MiB of RAID 0 and check for valid filesystem."""
+    """Reconstruct first ~16 MiB of RAID 0 and check for valid filesystem."""
     if n_disks * chunk_bytes == 0:
         return False
-    test_stripes = max(n_disks * 2, 2 * 1024 * 1024 // (n_disks * chunk_bytes))
+    test_stripes = max(n_disks * 2, 16 * 1024 * 1024 // (n_disks * chunk_bytes))
 
     fds = {}
     for i, p in enumerate(ordered_paths):
@@ -771,7 +774,10 @@ def _test_raid0_order(ordered_paths, chunk_bytes, data_offset_bytes, n_disks):
                         out.write(chunk)
 
         rc, _, _ = run(["fsstat", "-i", "raw", "-o", "0", tmp_path])
-        return rc == 0
+        if rc != 0:
+            return False
+        rc2, fls_out, _ = run(["fls", "-i", "raw", "-o", "0", tmp_path])
+        return rc2 == 0 and len(fls_out) > 0
     except OSError:
         return False
     finally:
@@ -872,6 +878,7 @@ COMMON_DATA_OFFSETS = [
     0,
     63 * 512,      # 32256 bytes — old CHS alignment
     2048 * 512,    # 1 MiB — modern alignment / md 1.2 default
+    4096 * 512,    # 2 MiB — md 1.2 on small disks
 ]
 
 
@@ -1010,7 +1017,7 @@ def _report_hw_failure(disks):
     """Report failure to detect hardware RAID configuration."""
     print(f"\n  [!] Could not detect hardware RAID configuration")
     print(f"  Tried:")
-    levels = "1, 0, 5" if len(disks) >= 3 else "1, 0"
+    levels = "0, 5" if len(disks) >= 3 else "1, 0"
     print(f"    RAID levels: {levels}")
     print(f"    Stripe sizes: "
           f"{', '.join(str(s // 1024) + 'K' for s in COMMON_STRIPE_SIZES)}")
@@ -1357,22 +1364,28 @@ def handle_hardware_raid_group(disks, output_dir, keep_raw, overrides=None):
     else:
         result = None
 
-        print(f"\n  Trying RAID 1 (mirror)...")
-        r1 = _try_hardware_raid1(disks)
-        if r1:
-            print(f"  [+] RAID 1 detected: {r1['disk']['e01']} has "
-                  f"{r1['fs_type']} at sector {r1['fs_offset']}")
-            print(f"  Extracting files...")
-            extract_files_from_image(r1['disk']['raw'], r1['fs_offset'],
-                                     os.path.join(out, "files"))
-            return
+        # RAID 1 only for 2-disk groups (3+ disks false-positive on
+        # RAID 5 members where the FS superblock lands in one stripe)
+        if len(disks) == 2:
+            print(f"\n  Trying RAID 1 (mirror)...")
+            r1 = _try_hardware_raid1(disks)
+            if r1:
+                print(f"  [+] RAID 1 detected: {r1['disk']['e01']} has "
+                      f"{r1['fs_type']} at sector {r1['fs_offset']}")
+                print(f"  Extracting files...")
+                extract_files_from_image(r1['disk']['raw'], r1['fs_offset'],
+                                         os.path.join(out, "files"))
+                return
 
-        print(f"  Trying RAID 0 (stripe)...")
-        result = _try_hardware_raid0(disks)
-
-        if not result and len(disks) >= 3:
-            print(f"  Trying RAID 5 (stripe + parity)...")
+        # For 3+ disks try RAID 5 first (more common, avoids RAID 0
+        # false positives where the FS superblock spans a single chunk)
+        if len(disks) >= 3:
+            print(f"\n  Trying RAID 5 (stripe + parity)...")
             result = _try_hardware_raid5(disks)
+
+        if not result:
+            print(f"  Trying RAID 0 (stripe)...")
+            result = _try_hardware_raid0(disks)
 
     if not result:
         _report_hw_failure(disks)
