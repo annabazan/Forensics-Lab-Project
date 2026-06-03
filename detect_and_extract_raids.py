@@ -187,6 +187,45 @@ def reconstruct_raid5_left_symmetric(disk_files, chunk_bytes, data_offset_bytes,
             fd.close()
 
 
+def reconstruct_raid0(disk_files, chunk_bytes, data_offset_bytes,
+                      data_size_sectors, output_path):
+    """Reconstruct a RAID 0 array by interleaving chunks across disks."""
+    n_disks = len(disk_files)
+    total_data_bytes = data_size_sectors * 512 * n_disks
+
+    print(f"    RAID-0: {n_disks} disks, {chunk_bytes // 1024} KiB chunk, "
+          f"data offset {data_offset_bytes} bytes")
+    print(f"    Total RAID volume size: {total_data_bytes / 1024 / 1024 / 1024:.2f} GiB")
+
+    fds = [open(path, "rb") for path in disk_files]
+
+    sectors_per_chunk = chunk_bytes // 512
+    num_stripes = data_size_sectors // sectors_per_chunk
+    report_interval = max(1, num_stripes // 20)
+
+    with open(output_path, "wb") as out:
+        bytes_written = 0
+        for stripe in range(num_stripes):
+            for disk_idx in range(n_disks):
+                disk_off = data_offset_bytes + stripe * chunk_bytes
+                fds[disk_idx].seek(disk_off)
+                chunk = fds[disk_idx].read(chunk_bytes)
+                if len(chunk) < chunk_bytes:
+                    chunk += b'\x00' * (chunk_bytes - len(chunk))
+                out.write(chunk)
+                bytes_written += chunk_bytes
+
+            if stripe % report_interval == 0 and stripe > 0:
+                pct = stripe / num_stripes * 100
+                print(f"    Progress: {pct:.0f}%", end="\r", flush=True)
+
+    print(f"    Wrote {bytes_written / 1024 / 1024:.1f} MiB to "
+          f"{os.path.basename(output_path)}")
+
+    for fd in fds:
+        fd.close()
+
+
 # ─── Partition table parsing ───────────────────────────────────────────────
 
 def get_partitions(raw_path):
@@ -705,6 +744,45 @@ def _test_raid5_order(ordered_paths, chunk_bytes, data_offset_bytes, n_disks):
             pass
 
 
+def _test_raid0_order(ordered_paths, chunk_bytes, data_offset_bytes, n_disks):
+    """Reconstruct first ~2 MiB of RAID 0 and check for valid filesystem."""
+    if n_disks * chunk_bytes == 0:
+        return False
+    test_stripes = max(n_disks * 2, 2 * 1024 * 1024 // (n_disks * chunk_bytes))
+
+    fds = {}
+    for i, p in enumerate(ordered_paths):
+        if p is not None:
+            fds[i] = open(p, 'rb')
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.raw')
+    try:
+        with os.fdopen(tmp_fd, 'wb') as out:
+            for stripe in range(test_stripes):
+                for disk_idx in range(n_disks):
+                    disk_off = data_offset_bytes + stripe * chunk_bytes
+                    if disk_idx not in fds:
+                        out.write(b'\x00' * chunk_bytes)
+                    else:
+                        fds[disk_idx].seek(disk_off)
+                        chunk = fds[disk_idx].read(chunk_bytes)
+                        if len(chunk) < chunk_bytes:
+                            chunk += b'\x00' * (chunk_bytes - len(chunk))
+                        out.write(chunk)
+
+        rc, _, _ = run(["fsstat", "-i", "raw", "-o", "0", tmp_path])
+        return rc == 0
+    except OSError:
+        return False
+    finally:
+        for fd in fds.values():
+            fd.close()
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 def resolve_ldm_disk_order(vmdb, disks):
     """Determine column order from VMDB Disk records + PRIVHEAD per-disk GUIDs.
 
@@ -790,6 +868,12 @@ COMMON_STRIPE_SIZES = [
     16 * 1024,
 ]
 
+COMMON_DATA_OFFSETS = [
+    0,
+    63 * 512,      # 32256 bytes — old CHS alignment
+    2048 * 512,    # 1 MiB — modern alignment / md 1.2 default
+]
+
 
 def detect_stripe_size(ordered_paths, data_offset_bytes, n_columns):
     """Try common stripe sizes and return the one that produces valid FS."""
@@ -798,6 +882,30 @@ def detect_stripe_size(ordered_paths, data_offset_bytes, n_columns):
                              n_columns):
             return chunk_bytes
     return None
+
+
+# ─── Hardware RAID Detection ─────────────────────────────────────────────
+
+
+def detect_hardware_raid_groups(classified):
+    """Cluster unknown disks by file size into candidate hardware RAID groups."""
+    unknowns = [d for d in classified if d['class'] == 'unknown']
+    if not unknowns:
+        return []
+
+    size_groups = {}
+    for d in unknowns:
+        try:
+            size = os.path.getsize(d['raw'])
+        except OSError:
+            continue
+        size_groups.setdefault(size, []).append(d)
+
+    groups = []
+    for size, disks in size_groups.items():
+        if len(disks) >= 2:
+            groups.append(disks)
+    return groups
 
 
 # ─── Group Handlers ────────────────────────────────────────────────────────
