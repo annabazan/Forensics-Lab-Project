@@ -1335,6 +1335,145 @@ def handle_ldm_group(guid, disks, output_dir, keep_raw):
         print(f"  Removed intermediate image")
 
 
+def handle_hardware_raid_group(disks, output_dir, keep_raw, overrides=None):
+    """Handle a group of unknown disks as hardware RAID."""
+    group_id = '_'.join(sorted(d['e01'].replace('.E01', '') for d in disks))
+    label = f"hw_{group_id}"
+    out = os.path.join(output_dir, label)
+    ensure_dir(out)
+
+    names = ', '.join(d['e01'] for d in disks)
+    disk_size = os.path.getsize(disks[0]['raw'])
+    print(f"\n  Hardware RAID candidate: {len(disks)} disks, "
+          f"{disk_size / 1073741824:.2f} GiB each")
+    print(f"  Members: {names}")
+
+    if len(disks) >= 5:
+        print(f"  [!] Warning: {len(disks)} disks = many permutations. "
+              f"Consider --hw-* flags for faster detection.")
+
+    if overrides and overrides.get('level') is not None:
+        result = _apply_hw_overrides(disks, overrides)
+    else:
+        result = None
+
+        print(f"\n  Trying RAID 1 (mirror)...")
+        r1 = _try_hardware_raid1(disks)
+        if r1:
+            print(f"  [+] RAID 1 detected: {r1['disk']['e01']} has "
+                  f"{r1['fs_type']} at sector {r1['fs_offset']}")
+            print(f"  Extracting files...")
+            extract_files_from_image(r1['disk']['raw'], r1['fs_offset'],
+                                     os.path.join(out, "files"))
+            return
+
+        print(f"  Trying RAID 0 (stripe)...")
+        result = _try_hardware_raid0(disks)
+
+        if not result and len(disks) >= 3:
+            print(f"  Trying RAID 5 (stripe + parity)...")
+            result = _try_hardware_raid5(disks)
+
+    if not result:
+        _report_hw_failure(disks)
+        return
+
+    level = result['level']
+    ordered = result['ordered']
+    chunk_bytes = result['chunk_bytes']
+    data_offset_bytes = result['data_offset_bytes']
+
+    # RAID 1 via override — extract directly from member disk
+    if level == 1:
+        disk_path = ordered[0]
+        fs_offset = data_offset_bytes // 512
+        if not fs_offset:
+            for try_bytes in COMMON_DATA_OFFSETS:
+                try_sectors = try_bytes // 512
+                rc, _, _ = run(["fsstat", "-i", "raw", "-o",
+                                str(try_sectors), disk_path])
+                if rc == 0:
+                    fs_offset = try_sectors
+                    break
+            if not fs_offset:
+                parts = get_partitions(disk_path)
+                for p in parts:
+                    rc, _, _ = run(["fsstat", "-i", "raw", "-o",
+                                    str(p['start']), disk_path])
+                    if rc == 0:
+                        fs_offset = p['start']
+                        break
+        if fs_offset is not None:
+            e01_name = next((d['e01'] for d in disks
+                             if d['raw'] == disk_path), '?')
+            print(f"\n  RAID 1: extracting from {e01_name} "
+                  f"at sector {fs_offset}")
+            extract_files_from_image(disk_path, fs_offset,
+                                     os.path.join(out, "files"))
+        else:
+            print(f"  [!] No filesystem found on RAID 1 member disk")
+        return
+
+    # RAID 0 / RAID 5 — compute data size and reconstruct
+    disk_size = os.path.getsize(disks[0]['raw'])
+    sectors_per_chunk = chunk_bytes // 512
+    avail_sectors = (disk_size - data_offset_bytes) // 512
+    data_size_sectors = (avail_sectors // sectors_per_chunk) * sectors_per_chunk
+
+    print(f"\n  Detected RAID {level} parameters:")
+    print(f"    Chunk size: {chunk_bytes // 1024} KiB")
+    print(f"    Data offset: {data_offset_bytes} bytes "
+          f"(sector {data_offset_bytes // 512})")
+    print(f"    Data size/disk: {data_size_sectors} sectors "
+          f"({data_size_sectors * 512 / 1073741824:.2f} GiB)")
+
+    for i, path in enumerate(ordered):
+        if path:
+            e01_name = next((d['e01'] for d in disks if d['raw'] == path),
+                            '?')
+            print(f"    Column {i}: {e01_name}")
+        else:
+            print(f"    Column {i}: MISSING (rebuild from parity)")
+
+    if level == 0:
+        raid_img = os.path.join(out, "raid0_reconstructed.raw")
+        print(f"\n  Reconstructing RAID 0...")
+        reconstruct_raid0(
+            disk_files=ordered,
+            chunk_bytes=chunk_bytes,
+            data_offset_bytes=data_offset_bytes,
+            data_size_sectors=data_size_sectors,
+            output_path=raid_img,
+        )
+    elif level == 5:
+        raid_img = os.path.join(out, "raid5_reconstructed.raw")
+        missing_idx = result.get('missing_idx')
+        print(f"\n  Reconstructing RAID 5...")
+        reconstruct_raid5_left_symmetric(
+            disk_files=ordered,
+            chunk_bytes=chunk_bytes,
+            data_offset_bytes=data_offset_bytes,
+            data_size_sectors=data_size_sectors,
+            output_path=raid_img,
+            missing_disk_idx=missing_idx,
+        )
+    else:
+        return
+
+    fs_type = detect_filesystem(raid_img)
+    if fs_type:
+        print(f"  [+] Detected {fs_type} filesystem")
+    else:
+        print(f"  [!] No recognized filesystem signature")
+
+    print(f"  Extracting files...")
+    extract_files_from_image(raid_img, 0, os.path.join(out, "files"))
+
+    if not keep_raw and os.path.exists(raid_img):
+        os.remove(raid_img)
+        print(f"  Removed intermediate image")
+
+
 # ─── Main ──────────────────────────────────────────────────────────────────
 
 def main():
