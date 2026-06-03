@@ -4,7 +4,7 @@ This file provides guidance to LLM when working with code in this repository.
 
 ## Project Overview
 
-Single-file forensic tool that auto-detects RAID configurations from E01 disk images, reconstructs arrays, and extracts user data. Targets Linux md RAID and Windows LDM/Dynamic Disk (RAID 5, left-symmetric layout). No prior knowledge of disk grouping or RAID parameters required.
+Single-file forensic tool that auto-detects RAID configurations from E01 disk images, reconstructs arrays, and extracts user data. Targets Linux md RAID, Windows LDM/Dynamic Disk, and hardware RAID controllers (RAID 0/1/5, left-symmetric layout for RAID 5). No prior knowledge of disk grouping or RAID parameters required.
 
 ## Commands
 
@@ -41,6 +41,7 @@ Key internals:
 - Disk ordering: md uses role from superblock; LDM matches per-disk GUIDs from PRIVHEAD against VMDB Disk records. Falls back to brute-force permutation if VMDB fails.
 - Degraded arrays (one missing disk) are rebuilt via XOR of remaining disks during reconstruction
 - Stripe size auto-detection tries common Windows sizes (16–512 KiB) against fsstat validation
+- Hardware RAID (no metadata): disks classified as "unknown" are clustered by file size. Each group runs through RAID 1 → 0 → 5 detection by brute-forcing permutations × stripe sizes × data offsets, validating with fsstat. CLI `--hw-*` flags allow manual override.
 
 ## Conventions
 

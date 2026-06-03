@@ -3,8 +3,12 @@
 Auto-detecting RAID Forensic Data Extraction
 =============================================
 Scans a directory of E01 forensic disk images, auto-detects RAID configurations
-(Linux md, Windows LDM/Dynamic Disk), groups related disks, reconstructs arrays,
-and extracts user data.
+(Linux md, Windows LDM/Dynamic Disk, hardware RAID), groups related disks,
+reconstructs arrays, and extracts user data.
+
+Supports RAID 0, 1, and 5. Hardware RAID arrays (no on-disk metadata) are
+detected by clustering disks of identical size and brute-forcing permutations,
+stripe sizes, and data offsets until a valid filesystem is found.
 
 Works with a flat directory of E01 files -- no prior knowledge of which disks
 belong together or what RAID parameters are used.
