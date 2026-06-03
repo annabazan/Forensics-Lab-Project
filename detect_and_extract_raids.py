@@ -1485,11 +1485,29 @@ def main():
                         help="Output directory (default: <input_dir>/auto_extracted)")
     parser.add_argument("--keep-raw", action="store_true",
                         help="Keep intermediate raw RAID images")
+    parser.add_argument("--hw-raid-level", type=int, choices=[0, 1, 5],
+                        help="Force RAID level for unknown disks")
+    parser.add_argument("--hw-stripe", type=int,
+                        help="Force stripe size in KiB for unknown disks")
+    parser.add_argument("--hw-order",
+                        help="Force disk order (comma-separated E01 filenames)")
+    parser.add_argument("--hw-offset", type=int,
+                        help="Force data offset in sectors for unknown disks")
     args = parser.parse_args()
 
     input_dir = os.path.abspath(args.input_dir)
     output_dir = (os.path.abspath(args.output) if args.output
                   else os.path.join(input_dir, "auto_extracted"))
+
+    hw_overrides = None
+    if (args.hw_raid_level is not None or args.hw_stripe
+            or args.hw_order or args.hw_offset is not None):
+        hw_overrides = {
+            'level': args.hw_raid_level,
+            'stripe': args.hw_stripe,
+            'offset': args.hw_offset,
+            'order': args.hw_order.split(',') if args.hw_order else None,
+        }
 
     # Check dependencies
     for tool in ["ewfmount", "fusermount", "fls", "icat", "mmls", "fsstat"]:
@@ -1584,6 +1602,18 @@ def main():
             key = ('unknown', d['e01'])
         groups.setdefault(key, []).append(d)
 
+    # Detect hardware RAID groups from unknowns
+    hw_groups = detect_hardware_raid_groups(classified)
+    if hw_groups:
+        hw_disk_e01s = set()
+        for hg in hw_groups:
+            for d in hg:
+                hw_disk_e01s.add(d['e01'])
+        groups = {k: v for k, v in groups.items()
+                  if k[0] != 'unknown' or k[1] not in hw_disk_e01s}
+        for i, hg in enumerate(hw_groups):
+            groups[('hardware', f'group_{i}')] = hg
+
     print(f"\n{'='*60}")
     print(f"Phase 2: Identified {len(groups)} disk group(s)")
     print(f"{'='*60}")
@@ -1616,6 +1646,12 @@ def main():
             print(f"{'='*60}")
             vol_out = os.path.join(output_dir, d['e01'].replace('.E01', ''))
             extract_files_from_image(d['raw'], d['fs_offset'], vol_out)
+
+        elif gtype == 'hardware':
+            print(f"GROUP: Hardware RAID candidate ({len(gdisks)} disk(s))")
+            print(f"{'='*60}")
+            handle_hardware_raid_group(gdisks, output_dir, args.keep_raw,
+                                       hw_overrides)
 
         else:
             print(f"GROUP: Unknown ({gdisks[0]['e01']})")
