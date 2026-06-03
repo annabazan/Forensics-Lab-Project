@@ -908,6 +908,156 @@ def detect_hardware_raid_groups(classified):
     return groups
 
 
+def _try_hardware_raid1(disks):
+    """Check if any disk in the group has a standalone filesystem."""
+    for d in disks:
+        for offset_bytes in COMMON_DATA_OFFSETS:
+            offset_sectors = offset_bytes // 512
+            rc, out, _ = run(["fsstat", "-i", "raw", "-o",
+                              str(offset_sectors), d['raw']])
+            if rc == 0:
+                fs_type = None
+                for line in out.decode(errors='replace').splitlines():
+                    if 'File System Type' in line:
+                        fs_type = line.split(':', 1)[1].strip()
+                        break
+                return {'level': 1, 'disk': d, 'fs_offset': offset_sectors,
+                        'fs_type': fs_type}
+
+        parts = get_partitions(d['raw'])
+        for p in parts:
+            rc, out, _ = run(["fsstat", "-i", "raw", "-o",
+                              str(p['start']), d['raw']])
+            if rc == 0:
+                fs_type = None
+                for line in out.decode(errors='replace').splitlines():
+                    if 'File System Type' in line:
+                        fs_type = line.split(':', 1)[1].strip()
+                        break
+                return {'level': 1, 'disk': d, 'fs_offset': p['start'],
+                        'fs_type': fs_type}
+    return None
+
+
+def _try_hardware_raid0(disks):
+    """Try all RAID 0 configurations and return first valid one."""
+    raw_paths = [d['raw'] for d in disks]
+    n_disks = len(disks)
+
+    for offset_bytes in COMMON_DATA_OFFSETS:
+        for chunk_bytes in COMMON_STRIPE_SIZES:
+            for perm in itertools.permutations(range(n_disks)):
+                ordered = [raw_paths[i] for i in perm]
+                if _test_raid0_order(ordered, chunk_bytes, offset_bytes,
+                                     n_disks):
+                    return {
+                        'level': 0,
+                        'ordered': ordered,
+                        'chunk_bytes': chunk_bytes,
+                        'data_offset_bytes': offset_bytes,
+                    }
+    return None
+
+
+def _try_hardware_raid5(disks):
+    """Try all RAID 5 configurations and return first valid one."""
+    raw_paths = [d['raw'] for d in disks]
+    n_disks = len(disks)
+
+    if n_disks < 3:
+        return None
+
+    for offset_bytes in COMMON_DATA_OFFSETS:
+        for chunk_bytes in COMMON_STRIPE_SIZES:
+            for perm in itertools.permutations(range(n_disks)):
+                ordered = [raw_paths[i] for i in perm]
+                if _test_raid5_order(ordered, chunk_bytes, offset_bytes,
+                                     n_disks):
+                    return {
+                        'level': 5,
+                        'ordered': ordered,
+                        'chunk_bytes': chunk_bytes,
+                        'data_offset_bytes': offset_bytes,
+                        'n_columns': n_disks,
+                        'missing_idx': None,
+                    }
+
+    # Try degraded (one missing disk)
+    for n_cols in range(n_disks + 1, n_disks + 3):
+        for offset_bytes in COMMON_DATA_OFFSETS:
+            for chunk_bytes in COMMON_STRIPE_SIZES:
+                for missing_col in range(n_cols):
+                    remaining_cols = [c for c in range(n_cols)
+                                      if c != missing_col]
+                    for perm in itertools.permutations(range(n_disks)):
+                        ordered = [None] * n_cols
+                        for i, p_idx in enumerate(perm):
+                            ordered[remaining_cols[i]] = raw_paths[p_idx]
+                        if _test_raid5_order(ordered, chunk_bytes,
+                                             offset_bytes, n_cols):
+                            return {
+                                'level': 5,
+                                'ordered': ordered,
+                                'chunk_bytes': chunk_bytes,
+                                'data_offset_bytes': offset_bytes,
+                                'n_columns': n_cols,
+                                'missing_idx': missing_col,
+                            }
+    return None
+
+
+def _report_hw_failure(disks):
+    """Report failure to detect hardware RAID configuration."""
+    print(f"\n  [!] Could not detect hardware RAID configuration")
+    print(f"  Tried:")
+    levels = "1, 0, 5" if len(disks) >= 3 else "1, 0"
+    print(f"    RAID levels: {levels}")
+    print(f"    Stripe sizes: "
+          f"{', '.join(str(s // 1024) + 'K' for s in COMMON_STRIPE_SIZES)}")
+    print(f"    Data offsets (sectors): "
+          f"{', '.join(str(o // 512) for o in COMMON_DATA_OFFSETS)}")
+    n_perm = 1
+    for i in range(1, len(disks) + 1):
+        n_perm *= i
+    total = n_perm * len(COMMON_STRIPE_SIZES) * len(COMMON_DATA_OFFSETS)
+    print(f"    Permutations per config: {n_perm} "
+          f"({total} total trials per RAID level)")
+    print(f"\n  Retry with manual parameters:")
+    print(f"    --hw-raid-level {{0,1,5}}")
+    print(f"    --hw-stripe SIZE_KIB")
+    print(f"    --hw-order disk_A.E01,disk_B.E01,...")
+    print(f"    --hw-offset SECTORS")
+
+
+def _apply_hw_overrides(disks, overrides):
+    """Apply user-specified hardware RAID parameters."""
+    level = overrides['level']
+
+    chunk_bytes = (overrides['stripe'] or 64) * 1024
+    data_offset_bytes = (overrides['offset'] or 0) * 512
+
+    if overrides.get('order'):
+        name_to_disk = {d['e01']: d for d in disks}
+        ordered = []
+        for name in overrides['order']:
+            key = name if name in name_to_disk else name + '.E01'
+            if key not in name_to_disk:
+                print(f"  [!] Unknown disk in --hw-order: {name}")
+                return None
+            ordered.append(name_to_disk[key]['raw'])
+    else:
+        ordered = [d['raw'] for d in disks]
+
+    return {
+        'level': level,
+        'ordered': ordered,
+        'chunk_bytes': chunk_bytes,
+        'data_offset_bytes': data_offset_bytes,
+        'n_columns': len(ordered),
+        'missing_idx': None,
+    }
+
+
 # ─── Group Handlers ────────────────────────────────────────────────────────
 
 def handle_md_group(uuid_str, disks, output_dir, keep_raw):
