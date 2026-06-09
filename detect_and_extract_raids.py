@@ -1037,7 +1037,7 @@ def _try_hardware_raid0(disks):
     return None
 
 
-def _try_hardware_raid5(disks):
+def _try_hardware_raid5(disks, *, try_degraded=True):
     """Try all RAID 5 configurations and return first valid one."""
     raw_paths = [d['raw'] for d in disks]
     n_disks = len(disks)
@@ -1059,6 +1059,9 @@ def _try_hardware_raid5(disks):
                         'n_columns': n_disks,
                         'missing_idx': None,
                     }
+
+    if not try_degraded:
+        return None
 
     # Try degraded (one missing disk)
     for n_cols in range(n_disks + 1, n_disks + 3):
@@ -1448,15 +1451,19 @@ def handle_hardware_raid_group(disks, output_dir, keep_raw, overrides=None):
                                          os.path.join(out, "files"))
                 return
 
-        # For 3+ disks try RAID 5 first (more common, avoids RAID 0
-        # false positives where the FS superblock spans a single chunk)
+        # Full RAID 5 first (all disks present), then RAID 0, then
+        # degraded RAID 5 last (prone to false positives on RAID 0 data)
         if len(disks) >= 3:
             print(f"\n  Trying RAID 5 (stripe + parity)...")
-            result = _try_hardware_raid5(disks)
+            result = _try_hardware_raid5(disks, try_degraded=False)
 
         if not result:
             print(f"  Trying RAID 0 (stripe)...")
             result = _try_hardware_raid0(disks)
+
+        if not result and len(disks) >= 3:
+            print(f"  Trying degraded RAID 5...")
+            result = _try_hardware_raid5(disks, try_degraded=True)
 
     if not result:
         _report_hw_failure(disks)
