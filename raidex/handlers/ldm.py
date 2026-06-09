@@ -12,13 +12,14 @@ from raidex.parsers.filesystem import detect_filesystem
 from raidex.parsers.partition import get_partitions
 from raidex.probes.ldm import parse_ldm_vmdb
 from raidex.reconstruction.raid5 import reconstruct_raid5_left_symmetric
+from raidex.types import ClassifiedDisk
 from raidex.util import ensure_dir, fsstat_probe, run
 
 logger = logging.getLogger(__name__)
 
 
 def _resolve_ldm_disk_order(
-    vmdb: dict | None, disks: list[dict]
+    vmdb: dict | None, disks: list[ClassifiedDisk]
 ) -> tuple[list[str | None], int] | None:
     """Determine column order from VMDB Disk records + PRIVHEAD per-disk GUIDs."""
     if not vmdb or not vmdb.get("disks"):
@@ -107,7 +108,7 @@ def _detect_degraded_disk_order(
 
 def handle_ldm_group(
     guid: str,
-    disks: list[dict],
+    disks: list[ClassifiedDisk],
     output_dir: str,
     keep_raw: bool,
 ) -> None:

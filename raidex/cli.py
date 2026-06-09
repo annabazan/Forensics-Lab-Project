@@ -7,6 +7,7 @@ import logging
 import os
 
 from raidex.pipeline import run_pipeline
+from raidex.types import HwOverrides
 
 
 def main() -> None:
@@ -69,18 +70,18 @@ def main() -> None:
         else os.path.join(input_dir, "auto_extracted")
     )
 
-    hw_overrides = None
+    hw_overrides: HwOverrides | None = None
     if (
         args.hw_raid_level is not None
         or args.hw_stripe
         or args.hw_order
         or args.hw_offset is not None
     ):
-        hw_overrides = {
-            "level": args.hw_raid_level,
-            "stripe": args.hw_stripe,
-            "offset": args.hw_offset,
-            "order": args.hw_order.split(",") if args.hw_order else None,
-        }
+        hw_overrides = HwOverrides(
+            level=args.hw_raid_level,
+            stripe=args.hw_stripe,
+            offset=args.hw_offset,
+            order=args.hw_order.split(",") if args.hw_order else None,
+        )
 
     run_pipeline(input_dir, output_dir, args.keep_raw, hw_overrides)

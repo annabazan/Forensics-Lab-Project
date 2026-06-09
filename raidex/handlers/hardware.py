@@ -11,7 +11,7 @@ from raidex.parsers.partition import get_partitions
 from raidex.probes.hardware import try_hardware_raid0, try_hardware_raid1, try_hardware_raid5
 from raidex.reconstruction.raid0 import reconstruct_raid0
 from raidex.reconstruction.raid5 import reconstruct_raid5_left_symmetric
-from raidex.types import HwOverrides
+from raidex.types import ClassifiedDisk, HwOverrides
 from raidex.util import (
     COMMON_DATA_OFFSETS,
     COMMON_STRIPE_SIZES,
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def _apply_hw_overrides(
-    disks: list[dict], overrides: HwOverrides
+    disks: list[ClassifiedDisk], overrides: HwOverrides
 ) -> dict | None:
     """Apply user-specified hardware RAID parameters."""
     level = overrides["level"]
@@ -53,7 +53,7 @@ def _apply_hw_overrides(
     }
 
 
-def _report_hw_failure(disks: list[dict]) -> None:
+def _report_hw_failure(disks: list[ClassifiedDisk]) -> None:
     """Report failure to detect hardware RAID configuration."""
     logger.warning("  Could not detect hardware RAID configuration")
     logger.warning("  Tried:")
@@ -84,7 +84,7 @@ def _report_hw_failure(disks: list[dict]) -> None:
 
 
 def handle_hardware_raid_group(
-    disks: list[dict],
+    disks: list[ClassifiedDisk],
     output_dir: str,
     keep_raw: bool,
     overrides: HwOverrides | None = None,

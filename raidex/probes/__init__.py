@@ -7,11 +7,12 @@ import logging
 from raidex.probes.ldm import probe_ldm
 from raidex.probes.md import probe_md
 from raidex.probes.standalone import probe_standalone
+from raidex.types import ClassifiedDisk
 
 logger = logging.getLogger(__name__)
 
 
-def probe_disk(raw_path: str, e01_name: str) -> dict:
+def probe_disk(raw_path: str, e01_name: str) -> ClassifiedDisk:
     """Classify a single disk by probing md -> LDM -> standalone -> unknown."""
     md = probe_md(raw_path)
     if md:

@@ -8,6 +8,7 @@ import os
 from raidex.extraction import extract_files_from_image
 from raidex.parsers.filesystem import detect_filesystem
 from raidex.reconstruction.raid5 import reconstruct_raid5_left_symmetric
+from raidex.types import ClassifiedDisk
 from raidex.util import ensure_dir
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def handle_md_group(
     uuid_str: str,
-    disks: list[dict],
+    disks: list[ClassifiedDisk],
     output_dir: str,
     keep_raw: bool,
 ) -> None:

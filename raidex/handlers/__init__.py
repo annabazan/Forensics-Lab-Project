@@ -8,7 +8,7 @@ from raidex.handlers.hardware import handle_hardware_raid_group
 from raidex.handlers.ldm import handle_ldm_group
 from raidex.handlers.md import handle_md_group
 from raidex.handlers.standalone import handle_standalone
-from raidex.types import HwOverrides
+from raidex.types import ClassifiedDisk, HwOverrides
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 def dispatch_group(
     gtype: str,
     gid: str,
-    disks: list[dict],
+    disks: list[ClassifiedDisk],
     output_dir: str,
     keep_raw: bool,
     hw_overrides: HwOverrides | None = None,

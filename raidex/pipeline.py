@@ -13,7 +13,7 @@ from raidex.handlers import dispatch_group
 from raidex.mounting import EwfMount
 from raidex.probes import probe_disk
 from raidex.probes.hardware import detect_hardware_raid_groups, detect_standalone_mirrors
-from raidex.types import HwOverrides
+from raidex.types import ClassifiedDisk, HwOverrides
 from raidex.util import ensure_dir
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ def run_pipeline(
     logger.info("Phase 1: Mounting and classifying disks")
     logger.info("=" * 60)
 
-    classified: list[dict] = []
+    classified: list[ClassifiedDisk] = []
 
     with ExitStack() as mount_stack:
         for e01 in e01_files:
@@ -85,7 +85,7 @@ def run_pipeline(
             sys.exit(1)
 
         # Phase 2: Group disks
-        groups: dict[tuple, list[dict]] = {}
+        groups: dict[tuple, list[ClassifiedDisk]] = {}
         for d in classified:
             if d["kind"] == "md":
                 key = ("md", d["uuid"])

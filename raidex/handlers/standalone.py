@@ -6,12 +6,13 @@ import logging
 import os
 
 from raidex.extraction import extract_files_from_image
+from raidex.types import ClassifiedDisk
 
 logger = logging.getLogger(__name__)
 
 
 def handle_standalone(
-    disk: dict,
+    disk: ClassifiedDisk,
     output_dir: str,
 ) -> None:
     """Extract files from a standalone volume."""

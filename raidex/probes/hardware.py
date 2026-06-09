@@ -7,20 +7,21 @@ import logging
 import os
 
 from raidex.parsers.partition import get_partitions
+from raidex.types import ClassifiedDisk
 from raidex.util import COMMON_DATA_OFFSETS, COMMON_STRIPE_SIZES, fsstat_probe
 
 logger = logging.getLogger(__name__)
 
 
 def detect_hardware_raid_groups(
-    classified: list[dict],
-) -> list[list[dict]]:
+    classified: list[ClassifiedDisk],
+) -> list[list[ClassifiedDisk]]:
     """Cluster unknown disks by file size into candidate hardware RAID groups."""
     unknowns = [d for d in classified if d["kind"] == "unknown"]
     if not unknowns:
         return []
 
-    size_groups: dict[int, list[dict]] = {}
+    size_groups: dict[int, list[ClassifiedDisk]] = {}
     for d in unknowns:
         try:
             size = os.path.getsize(d["raw"])
@@ -32,8 +33,8 @@ def detect_hardware_raid_groups(
 
 
 def detect_standalone_mirrors(
-    groups: dict[tuple, list[dict]],
-) -> dict[tuple, list[dict]]:
+    groups: dict[tuple, list[ClassifiedDisk]],
+) -> dict[tuple, list[ClassifiedDisk]]:
     """Detect RAID 1 mirrors among standalone-classified disks."""
     standalone_keys = [k for k in groups if k[0] == "standalone"]
     if len(standalone_keys) < 2:
@@ -88,7 +89,7 @@ def detect_standalone_mirrors(
     return groups
 
 
-def try_hardware_raid1(disks: list[dict]) -> dict | None:
+def try_hardware_raid1(disks: list[ClassifiedDisk]) -> dict | None:
     """Check if any disk in the group has a standalone filesystem."""
     for d in disks:
         for offset_bytes in COMMON_DATA_OFFSETS:
@@ -115,7 +116,7 @@ def try_hardware_raid1(disks: list[dict]) -> dict | None:
     return None
 
 
-def try_hardware_raid0(disks: list[dict]) -> dict | None:
+def try_hardware_raid0(disks: list[ClassifiedDisk]) -> dict | None:
     """Try all RAID 0 configurations and return first valid one."""
     from raidex.reconstruction.raid0 import test_raid0_order
 
@@ -137,7 +138,7 @@ def try_hardware_raid0(disks: list[dict]) -> dict | None:
 
 
 def try_hardware_raid5(
-    disks: list[dict], *, try_degraded: bool = True
+    disks: list[ClassifiedDisk], *, try_degraded: bool = True
 ) -> dict | None:
     """Try all RAID 5 configurations and return first valid one."""
     from raidex.reconstruction.raid5 import test_raid5_order
