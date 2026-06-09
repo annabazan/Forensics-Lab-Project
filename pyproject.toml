@@ -11,7 +11,9 @@ detect-raids = "raidex.cli:main"
 
 [tool.uv]
 package = true
-dev-dependencies = ["pytest>=8"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["raidex"]
