@@ -33,10 +33,14 @@ def run_pipeline(
             logger.error("Required tool not found: %s", tool)
             sys.exit(1)
 
-    e01_files = sorted(glob.glob(os.path.join(input_dir, "*.E01")))
+    e01_files = sorted(
+        glob.glob(os.path.join(input_dir, "*.E01"))
+        + glob.glob(os.path.join(input_dir, "*.e01"))
+    )
     if not e01_files:
         e01_files = sorted(
             glob.glob(os.path.join(input_dir, "**", "*.E01"), recursive=True)
+            + glob.glob(os.path.join(input_dir, "**", "*.e01"), recursive=True)
         )
     if not e01_files:
         logger.error("No E01 files found in %s", input_dir)
