@@ -108,9 +108,9 @@ def handle_hardware_raid_group(
     )
     logger.info("  Members: %s", names)
 
-    if len(disks) >= 5:
+    if len(disks) > 5:
         logger.warning(
-            "  Warning: %d disks = many permutations. Consider --hw-* flags.",
+            "  %d disks exceeds brute-force limit (max 5). Use --hw-order to specify disk order.",
             len(disks),
         )
 

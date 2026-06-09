@@ -12,6 +12,8 @@ from raidex.util import COMMON_DATA_OFFSETS, COMMON_STRIPE_SIZES, fsstat_probe
 
 logger = logging.getLogger(__name__)
 
+MAX_BRUTE_FORCE_DISKS = 5
+
 
 def detect_hardware_raid_groups(
     classified: list[ClassifiedDisk],
@@ -118,6 +120,12 @@ def try_hardware_raid1(disks: list[ClassifiedDisk]) -> dict | None:
 
 def try_hardware_raid0(disks: list[ClassifiedDisk]) -> dict | None:
     """Try all RAID 0 configurations and return first valid one."""
+    if len(disks) > MAX_BRUTE_FORCE_DISKS:
+        logger.warning(
+            "  Too many disks (%d) for brute-force RAID 0. Use --hw-order.",
+            len(disks),
+        )
+        return None
     from raidex.reconstruction.raid0 import test_raid0_order
 
     raw_paths = [d["raw"] for d in disks]
@@ -141,6 +149,12 @@ def try_hardware_raid5(
     disks: list[ClassifiedDisk], *, try_degraded: bool = True
 ) -> dict | None:
     """Try all RAID 5 configurations and return first valid one."""
+    if len(disks) > MAX_BRUTE_FORCE_DISKS:
+        logger.warning(
+            "  Too many disks (%d) for brute-force RAID 5. Use --hw-order.",
+            len(disks),
+        )
+        return None
     from raidex.reconstruction.raid5 import test_raid5_order
 
     raw_paths = [d["raw"] for d in disks]
