@@ -95,7 +95,11 @@ def handle_hardware_raid_group(
     out = os.path.join(output_dir, label)
     ensure_dir(out)
 
-    disk_size = os.path.getsize(disks[0]["raw"])
+    try:
+        disk_size = os.path.getsize(disks[0]["raw"])
+    except OSError:
+        logger.warning("  Cannot read disk size for %s", disks[0]["e01"])
+        return
     names = ", ".join(d["e01"] for d in disks)
     logger.info(
         "  Hardware RAID candidate: %d disks, %.2f GiB each",
@@ -155,13 +159,14 @@ def handle_hardware_raid_group(
     if level == 1:
         disk_path = ordered[0]
         fs_offset: int | None = data_offset_bytes // 512
-        if not fs_offset:
+        if fs_offset == 0:
+            fs_offset = None
             for try_bytes in COMMON_DATA_OFFSETS:
                 try_sectors = try_bytes // 512
                 if fsstat_probe(disk_path, try_sectors) is not None:
                     fs_offset = try_sectors
                     break
-            if not fs_offset:
+            if fs_offset is None:
                 parts = get_partitions(disk_path)
                 for p in parts:
                     if fsstat_probe(disk_path, p["start"]) is not None:
