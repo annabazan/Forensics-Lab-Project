@@ -27,6 +27,7 @@ COMMON_DATA_OFFSETS = [
 
 def run(cmd: list[str], **kwargs: object) -> tuple[int, bytes, bytes]:
     """Run a command, return (returncode, stdout, stderr)."""
+    logger.debug("Running: %s", cmd)
     r = subprocess.run(cmd, capture_output=True, **kwargs)
     return r.returncode, r.stdout, r.stderr
 

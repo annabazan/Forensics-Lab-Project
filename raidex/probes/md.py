@@ -59,7 +59,7 @@ def read_md_superblock(raw_path: str, *, byte_offset: int) -> dict | None:
             return None
 
         set_uuid = sb[16:32]
-        level = struct.unpack_from("<I", sb, 72)[0]
+        level = struct.unpack_from("<i", sb, 72)[0]
         layout = struct.unpack_from("<I", sb, 76)[0]
         chunk_sectors = struct.unpack_from("<I", sb, 88)[0]
         raid_disks = struct.unpack_from("<I", sb, 92)[0]

@@ -30,7 +30,13 @@ class EwfMount:
 
     def __exit__(self, *exc: object) -> None:
         if self.mountpoint:
-            run(["fusermount", "-u", self.mountpoint])
+            rc, _, err = run(["fusermount", "-u", self.mountpoint])
+            if rc != 0:
+                logger.warning(
+                    "Failed to unmount %s: %s",
+                    self.mountpoint,
+                    err.decode(errors="replace").strip(),
+                )
             try:
                 os.rmdir(self.mountpoint)
             except OSError:
