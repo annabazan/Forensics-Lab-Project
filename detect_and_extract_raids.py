@@ -484,6 +484,27 @@ def probe_ldm(raw_path):
         return None
 
 
+def _probe_fs_at_offset(raw_path, offset):
+    """Probe for a valid filesystem at the given sector offset.
+
+    Runs fsstat to check for a superblock, then fls to verify the
+    filesystem is actually readable (not just a superblock fragment
+    from a RAID 0 member disk).
+    """
+    rc, out, _ = run(["fsstat", "-i", "raw", "-o", str(offset), raw_path])
+    if rc != 0:
+        return None
+    fs_type = None
+    for line in out.decode(errors='replace').splitlines():
+        if 'File System Type' in line:
+            fs_type = line.split(':', 1)[1].strip()
+            break
+    rc2, out2, _ = run(["fls", "-i", "raw", "-o", str(offset), raw_path])
+    if rc2 != 0 or not out2.strip():
+        return None
+    return {'fs_offset': offset, 'fs_type': fs_type}
+
+
 def probe_standalone(raw_path):
     """Try to identify a standalone filesystem at common offsets.
 
@@ -492,26 +513,16 @@ def probe_standalone(raw_path):
     """
     # First try common fixed offsets
     for offset in (63, 0, 2048):
-        rc, out, _ = run(["fsstat", "-i", "raw", "-o", str(offset), raw_path])
-        if rc == 0:
-            fs_type = None
-            for line in out.decode(errors='replace').splitlines():
-                if 'File System Type' in line:
-                    fs_type = line.split(':', 1)[1].strip()
-                    break
-            return {'fs_offset': offset, 'fs_type': fs_type}
+        result = _probe_fs_at_offset(raw_path, offset)
+        if result:
+            return result
 
     # If no FS at common offsets, check partition table for data partitions
     parts = get_partitions(raw_path)
     for p in parts:
-        rc, out, _ = run(["fsstat", "-i", "raw", "-o", str(p['start']), raw_path])
-        if rc == 0:
-            fs_type = None
-            for line in out.decode(errors='replace').splitlines():
-                if 'File System Type' in line:
-                    fs_type = line.split(':', 1)[1].strip()
-                    break
-            return {'fs_offset': p['start'], 'fs_type': fs_type}
+        result = _probe_fs_at_offset(raw_path, p['start'])
+        if result:
+            return result
 
     return None
 
