@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 # Generate E01 test image sets for detect_and_extract_raids.py
 #
-# Test cases:
-#   md_raid5_3disk        — 3-disk md RAID 5, 512K chunk, ext4
-#   md_raid5_4disk_64k    — 4-disk md RAID 5, 64K chunk, ext4
-#   md_raid5_degraded     — 3-disk md RAID 5, only 2 disks exported
-#   standalone_ext4       — single disk, MBR partition table, ext4
-#   standalone_fat32      — single disk, whole-device FAT32
-#   hardware_raid5        — 3-disk RAID 5 with superblock wiped (no metadata)
-#   hardware_raid0        — 3-disk RAID 0 with superblock wiped (no metadata)
-#   hardware_raid1        — 2-disk RAID 1 with superblock wiped (no metadata)
-#   mixed                 — RAID + standalone E01s in one directory
-#   gpt                   - RAID + gpt partition table
+# All E01 files land in a single flat directory ($OUT) with unique prefixed
+# names.  Run the tool once against that directory to exercise the full
+# auto-detection pipeline.
+#
+# Test cases (prefix → description):
+#   md5_3d_       — 3-disk md RAID 5, 512K chunk, ext4
+#   md5_4d_       — 4-disk md RAID 5, 64K chunk, ext4
+#   md5_deg_      — 3-disk md RAID 5, only 2 disks exported (degraded)
+#   md5_gpt_      — 3-disk md RAID 5 on GPT partitions
+#   ext4_         — single disk, MBR partition table, ext4
+#   fat32_        — single disk, whole-device FAT32
+#   hw5_          — 3-disk hardware RAID 5, superblock wiped (110 MiB disks)
+#   hw0_          — 3-disk hardware RAID 0, superblock wiped (120 MiB disks)
+#   hw1_          — 2-disk hardware RAID 1, superblock wiped (105 MiB disks)
+#
+# Hardware RAID test cases use different disk sizes so size-based clustering
+# groups them correctly when all files share one directory.
 #
 # Usage: sudo ./gen_test_data.sh [output_dir]
 # Dependencies: mdadm, ewfacquire (libewf), mkfs.ext4, mkfs.fat, sfdisk
@@ -116,24 +122,22 @@ banner() {
 # ─── Test cases ───────────────────────────────────────────────────────────
 
 gen_md_raid5() {
-    local name="$1" n_disks="$2" chunk_k="${3:-512}"
-    local case_dir="$OUT/$name"
-    local md_dev mnt="$WORK/mnt_${name}"
+    local prefix="$1" n_disks="$2" chunk_k="${3:-512}" disk_mb="${4:-$DISK_MB}"
+    local md_dev mnt="$WORK/mnt_${prefix}"
     md_dev=$(next_md)
 
-    banner "$name — ${n_disks}-disk md RAID 5, ${chunk_k}K chunk"
+    banner "$prefix — ${n_disks}-disk md RAID 5, ${chunk_k}K chunk"
 
     local devs=() raws=() letters=(A B C D E F G H)
     for i in $(seq 0 $((n_disks - 1))); do
-        local raw="$WORK/${name}_${letters[$i]}.raw"
-        truncate -s "${DISK_MB}M" "$raw"
+        local raw="$WORK/${prefix}_${letters[$i]}.raw"
+        truncate -s "${disk_mb}M" "$raw"
         raws+=("$raw")
         devs+=("$(lo_attach "$raw")")
     done
 
     md_create "$md_dev" --level=5 --raid-devices="$n_disks" \
         --chunk="$chunk_k" "${devs[@]}"
-    # wait for initial sync on small arrays
     mdadm --wait "$md_dev" 2>/dev/null || true
 
     mkfs.ext4 -q "$md_dev"
@@ -146,25 +150,23 @@ gen_md_raid5() {
         lo_detach "${devs[$i]}"
     done
 
-    mkdir -p "$case_dir"
     for i in $(seq 0 $((n_disks - 1))); do
-        to_e01 "${raws[$i]}" "$case_dir/disk_${letters[$i]}"
+        to_e01 "${raws[$i]}" "$OUT/${prefix}_${letters[$i]}"
     done
 
-    echo "[+] $name: $n_disks E01 files → $case_dir"
+    echo "[+] $prefix: $n_disks E01 files → $OUT"
 }
 
 gen_md_raid5_degraded() {
-    local name="md_raid5_degraded"
-    local case_dir="$OUT/$name"
-    local md_dev mnt="$WORK/mnt_${name}"
+    local prefix="md5_deg"
+    local md_dev mnt="$WORK/mnt_${prefix}"
     md_dev=$(next_md)
 
-    banner "$name — 3-disk md RAID 5, 1 disk excluded"
+    banner "$prefix — 3-disk md RAID 5, 1 disk excluded"
 
     local devs=() raws=() letters=(A B C)
     for i in 0 1 2; do
-        local raw="$WORK/${name}_${letters[$i]}.raw"
+        local raw="$WORK/${prefix}_${letters[$i]}.raw"
         truncate -s "${DISK_MB}M" "$raw"
         raws+=("$raw")
         devs+=("$(lo_attach "$raw")")
@@ -182,20 +184,18 @@ gen_md_raid5_degraded() {
     for i in 0 1 2; do lo_detach "${devs[$i]}"; done
 
     # Export only 2 of 3 disks — tool must rebuild via XOR
-    mkdir -p "$case_dir"
-    to_e01 "${raws[0]}" "$case_dir/disk_A"
-    to_e01 "${raws[1]}" "$case_dir/disk_B"
+    to_e01 "${raws[0]}" "$OUT/${prefix}_A"
+    to_e01 "${raws[1]}" "$OUT/${prefix}_B"
 
-    echo "[+] $name: 2 E01 files (disk C excluded) → $case_dir"
+    echo "[+] $prefix: 2 E01 files (disk C excluded) → $OUT"
 }
 
 gen_standalone_ext4() {
-    local name="standalone_ext4"
-    local case_dir="$OUT/$name"
-    local raw="$WORK/${name}.raw"
-    local mnt="$WORK/mnt_${name}"
+    local prefix="ext4"
+    local raw="$WORK/${prefix}.raw"
+    local mnt="$WORK/mnt_${prefix}"
 
-    banner "$name — MBR + ext4 partition"
+    banner "$prefix — MBR + ext4 partition"
 
     truncate -s "${DISK_MB}M" "$raw"
 
@@ -207,7 +207,6 @@ gen_standalone_ext4() {
     partprobe "$dev"
     sleep 0.5
 
-    # Partition device: e.g. /dev/loop101p1
     local part="${dev}p1"
     for _ in $(seq 1 20); do [ -b "$part" ] && break; sleep 0.3; done
     [ -b "$part" ] || die "Partition $part not found"
@@ -218,19 +217,17 @@ gen_standalone_ext4() {
     umount_fs "$mnt"
     lo_detach "$dev"
 
-    mkdir -p "$case_dir"
-    to_e01 "$raw" "$case_dir/disk"
+    to_e01 "$raw" "$OUT/${prefix}_disk"
 
-    echo "[+] $name: 1 E01 file → $case_dir"
+    echo "[+] $prefix: 1 E01 file → $OUT"
 }
 
 gen_standalone_fat32() {
-    local name="standalone_fat32"
-    local case_dir="$OUT/$name"
-    local raw="$WORK/${name}.raw"
-    local mnt="$WORK/mnt_${name}"
+    local prefix="fat32"
+    local raw="$WORK/${prefix}.raw"
+    local mnt="$WORK/mnt_${prefix}"
 
-    banner "$name — whole-disk FAT32"
+    banner "$prefix — whole-disk FAT32"
 
     truncate -s "${DISK_MB}M" "$raw"
     mkfs.fat -F 32 "$raw" >/dev/null
@@ -242,24 +239,23 @@ gen_standalone_fat32() {
     umount_fs "$mnt"
     lo_detach "$dev"
 
-    mkdir -p "$case_dir"
-    to_e01 "$raw" "$case_dir/disk"
+    to_e01 "$raw" "$OUT/${prefix}_disk"
 
-    echo "[+] $name: 1 E01 file → $case_dir"
+    echo "[+] $prefix: 1 E01 file → $OUT"
 }
 
 gen_hardware_raid5() {
-    local name="hardware_raid5"
-    local case_dir="$OUT/$name"
-    local md_dev mnt="$WORK/mnt_${name}"
+    local prefix="hw5"
+    local disk_mb=110
+    local md_dev mnt="$WORK/mnt_${prefix}"
     md_dev=$(next_md)
 
-    banner "$name — 3-disk RAID 5, superblock wiped (no metadata)"
+    banner "$prefix — 3-disk RAID 5, superblock wiped (${disk_mb} MiB disks)"
 
     local devs=() raws=() letters=(A B C)
     for i in 0 1 2; do
-        local raw="$WORK/${name}_${letters[$i]}.raw"
-        truncate -s "${DISK_MB}M" "$raw"
+        local raw="$WORK/${prefix}_${letters[$i]}.raw"
+        truncate -s "${disk_mb}M" "$raw"
         raws+=("$raw")
         devs+=("$(lo_attach "$raw")")
     done
@@ -273,34 +269,31 @@ gen_hardware_raid5() {
     umount_fs "$mnt"
     md_stop "$md_dev"
 
-    # Wipe md superblocks — simulates hardware RAID controller images
     for dev in "${devs[@]}"; do
         mdadm --zero-superblock "$dev" 2>/dev/null || true
     done
 
     for i in 0 1 2; do lo_detach "${devs[$i]}"; done
 
-    mkdir -p "$case_dir"
     for i in 0 1 2; do
-        to_e01 "${raws[$i]}" "$case_dir/disk_${letters[$i]}"
+        to_e01 "${raws[$i]}" "$OUT/${prefix}_${letters[$i]}"
     done
 
-    echo "[+] $name: 3 E01 files (no RAID metadata) → $case_dir"
-    echo "    Tool will classify as 'unknown' — needs manual RAID params"
+    echo "[+] $prefix: 3 E01 files (no RAID metadata, ${disk_mb} MiB) → $OUT"
 }
 
 gen_hardware_raid0() {
-    local name="hardware_raid0"
-    local case_dir="$OUT/$name"
-    local md_dev mnt="$WORK/mnt_${name}"
+    local prefix="hw0"
+    local disk_mb=120
+    local md_dev mnt="$WORK/mnt_${prefix}"
     md_dev=$(next_md)
 
-    banner "$name — 3-disk RAID 0, superblock wiped (no metadata)"
+    banner "$prefix — 3-disk RAID 0, superblock wiped (${disk_mb} MiB disks)"
 
     local devs=() raws=() letters=(A B C)
     for i in 0 1 2; do
-        local raw="$WORK/${name}_${letters[$i]}.raw"
-        truncate -s "${DISK_MB}M" "$raw"
+        local raw="$WORK/${prefix}_${letters[$i]}.raw"
+        truncate -s "${disk_mb}M" "$raw"
         raws+=("$raw")
         devs+=("$(lo_attach "$raw")")
     done
@@ -313,33 +306,31 @@ gen_hardware_raid0() {
     umount_fs "$mnt"
     md_stop "$md_dev"
 
-    # Wipe md superblocks — simulates hardware RAID controller images
     for dev in "${devs[@]}"; do
         mdadm --zero-superblock "$dev" 2>/dev/null || true
     done
 
     for i in 0 1 2; do lo_detach "${devs[$i]}"; done
 
-    mkdir -p "$case_dir"
     for i in 0 1 2; do
-        to_e01 "${raws[$i]}" "$case_dir/disk_${letters[$i]}"
+        to_e01 "${raws[$i]}" "$OUT/${prefix}_${letters[$i]}"
     done
 
-    echo "[+] $name: 3 E01 files (no RAID metadata) → $case_dir"
+    echo "[+] $prefix: 3 E01 files (no RAID metadata, ${disk_mb} MiB) → $OUT"
 }
 
 gen_hardware_raid1() {
-    local name="hardware_raid1"
-    local case_dir="$OUT/$name"
-    local md_dev mnt="$WORK/mnt_${name}"
+    local prefix="hw1"
+    local disk_mb=105
+    local md_dev mnt="$WORK/mnt_${prefix}"
     md_dev=$(next_md)
 
-    banner "$name — 2-disk RAID 1, superblock wiped (no metadata)"
+    banner "$prefix — 2-disk RAID 1, superblock wiped (${disk_mb} MiB disks)"
 
     local devs=() raws=() letters=(A B)
     for i in 0 1; do
-        local raw="$WORK/${name}_${letters[$i]}.raw"
-        truncate -s "${DISK_MB}M" "$raw"
+        local raw="$WORK/${prefix}_${letters[$i]}.raw"
+        truncate -s "${disk_mb}M" "$raw"
         raws+=("$raw")
         devs+=("$(lo_attach "$raw")")
     done
@@ -353,74 +344,35 @@ gen_hardware_raid1() {
     umount_fs "$mnt"
     md_stop "$md_dev"
 
-    # Wipe md superblocks
     for dev in "${devs[@]}"; do
         mdadm --zero-superblock "$dev" 2>/dev/null || true
     done
 
     for i in 0 1; do lo_detach "${devs[$i]}"; done
 
-    mkdir -p "$case_dir"
     for i in 0 1; do
-        to_e01 "${raws[$i]}" "$case_dir/disk_${letters[$i]}"
+        to_e01 "${raws[$i]}" "$OUT/${prefix}_${letters[$i]}"
     done
 
-    echo "[+] $name: 2 E01 files (no RAID metadata) → $case_dir"
-    echo "    Note: each disk has full FS at sector 2048 — may classify as standalone"
-}
-
-gen_mixed() {
-    local name="mixed"
-    local case_dir="$OUT/$name"
-
-    banner "$name — RAID + standalone in one directory"
-
-    mkdir -p "$case_dir"
-
-    local src count=0
-    # Copy md RAID 5 disks (prefixed to avoid name collision)
-    src="$OUT/md_raid5_3disk"
-    if [ -d "$src" ]; then
-        for f in "$src"/*.E01; do
-            [ -f "$f" ] || continue
-            cp "$f" "$case_dir/raid_$(basename "$f")"
-            ((++count))
-        done
-    fi
-
-    # Copy standalone ext4
-    src="$OUT/standalone_ext4"
-    if [ -d "$src" ]; then
-        for f in "$src"/*.E01; do
-            [ -f "$f" ] || continue
-            cp "$f" "$case_dir/solo_$(basename "$f")"
-            ((++count))
-        done
-    fi
-
-    echo "[+] $name: $count E01 files (mixed types) → $case_dir"
+    echo "[+] $prefix: 2 E01 files (no RAID metadata, ${disk_mb} MiB) → $OUT"
 }
 
 gen_md_raid5_gpt() {
-    local name="md_raid5_gpt"
-    local case_dir="$OUT/$name"
-    local md_dev mnt="$WORK/mnt_${name}"
+    local prefix="md5_gpt"
+    local md_dev mnt="$WORK/mnt_${prefix}"
     md_dev=$(next_md)
 
-    banner "$name — GPT on disks + RAID5 on partitions"
+    banner "$prefix — GPT on disks + RAID5 on partitions"
 
     local devs=() raws=() letters=(A B C)
 
-    # ===== create raw disks + attach loop =====
     for i in 0 1 2; do
-        local raw="$WORK/${name}_${letters[$i]}.raw"
+        local raw="$WORK/${prefix}_${letters[$i]}.raw"
         truncate -s "${DISK_MB}M" "$raw"
         raws+=("$raw")
-
         devs+=("$(lo_attach "$raw")")
     done
 
-    # ===== GPT on EACH disk (before RAID) =====
     local parts=()
     for dev in "${devs[@]}"; do
         sgdisk -Z "$dev"
@@ -439,31 +391,25 @@ gen_md_raid5_gpt() {
         parts+=("$part")
     done
 
-    # ===== RAID on partitions =====
     md_create "$md_dev" --level=5 --raid-devices=3 --chunk=512 "${parts[@]}"
     mdadm --wait "$md_dev" 2>/dev/null || true
 
-    # ===== filesystem on RAID device =====
     mkfs.ext4 -q "$md_dev"
     mount_fs "$md_dev" "$mnt"
-
     populate "$mnt"
     umount_fs "$mnt"
 
     md_stop "$md_dev"
 
-    # ===== detach loops =====
     for d in "${devs[@]}"; do
         lo_detach "$d"
     done
 
-    # ===== export artifacts =====
-    mkdir -p "$case_dir"
     for i in 0 1 2; do
-        to_e01 "${raws[$i]}" "$case_dir/disk_${letters[$i]}"
+        to_e01 "${raws[$i]}" "$OUT/${prefix}_${letters[$i]}"
     done
 
-    echo "[+] $name: GPT → RAID + md device → $case_dir"
+    echo "[+] $prefix: 3 E01 files (GPT + RAID) → $OUT"
 }
 
 # ─── Main ─────────────────────────────────────────────────────────────────
@@ -476,18 +422,18 @@ main() {
     echo "[*] Output: $OUT"
     echo "[*] Temp:   $WORK"
 
+    rm -rf "$OUT"
     mkdir -p "$OUT"
 
-    gen_md_raid5 "md_raid5_3disk" 3 512
-    gen_md_raid5 "md_raid5_4disk_64k" 4 64
+    gen_md_raid5 "md5_3d" 3 512
+    gen_md_raid5 "md5_4d" 4 64
     gen_md_raid5_degraded
+    gen_md_raid5_gpt
     gen_standalone_ext4
     gen_standalone_fat32
     gen_hardware_raid5
     gen_hardware_raid0
     gen_hardware_raid1
-    gen_mixed
-    gen_md_raid5_gpt
 
     # chown output to the invoking user (not root)
     if [ -n "${SUDO_USER:-}" ]; then
@@ -496,16 +442,17 @@ main() {
 
     echo
     echo "═══════════════════════════════════════"
-    echo " All test sets generated:"
+    echo " All test data generated in $OUT:"
     echo "═══════════════════════════════════════"
-    for d in "$OUT"/*/; do
-        [ -d "$d" ] || continue
-        local count
-        count=$(find "$d" -maxdepth 1 -name "*.E01" | wc -l)
-        printf "  %-28s %d E01 file(s)\n" "$(basename "$d")/" "$count"
+    local count
+    count=$(find "$OUT" -maxdepth 1 -name "*.E01" | wc -l)
+    echo "  $count E01 file(s) total"
+    echo
+    ls -1 "$OUT"/*.E01 2>/dev/null | while read -r f; do
+        printf "  %s (%s)\n" "$(basename "$f")" "$(du -h "$f" | cut -f1)"
     done
     echo
-    echo "Run: python detect_and_extract_raids.py $OUT/<test_case>/"
+    echo "Run: python detect_and_extract_raids.py $OUT/"
 }
 
 main

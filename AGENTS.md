@@ -17,7 +17,7 @@ uv sync
 detect-raids [input_dir] [-o output_dir] [--keep-raw]
 ```
 
-No test suite exists.
+No test suite exists. Validation: `sudo ./gen_test_data.sh` generates a flat `test_data/` directory with all E01 files, then `python detect_and_extract_raids.py test_data/` one-shots the full auto-detection pipeline.
 
 ## System Dependencies
 
@@ -41,7 +41,7 @@ Key internals:
 - Disk ordering: md uses role from superblock; LDM matches per-disk GUIDs from PRIVHEAD against VMDB Disk records. Falls back to brute-force permutation if VMDB fails.
 - Degraded arrays (one missing disk) are rebuilt via XOR of remaining disks during reconstruction
 - Stripe size auto-detection tries common Windows sizes (16–512 KiB) against fsstat validation
-- Hardware RAID (no metadata): disks classified as "unknown" are clustered by file size. Each group runs through RAID 1 → 0 → 5 detection by brute-forcing permutations × stripe sizes × data offsets, validating with fsstat. CLI `--hw-*` flags allow manual override.
+- Hardware RAID (no metadata): disks classified as "unknown" are clustered by file size. Each group runs through full RAID 5 → RAID 0 → degraded RAID 5, validated with fsstat+fls. RAID 1 mirrors are detected among standalone-classified disks via content sampling. CLI `--hw-*` flags allow manual override.
 
 ## Conventions
 
