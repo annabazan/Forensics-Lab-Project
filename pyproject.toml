@@ -1,5 +1,5 @@
 [project]
-name = "forensics-lab-project"
+name = "raidex"
 version = "0.1.0"
 description = "Auto-detecting RAID forensic data extraction from E01 images"
 readme = "README.md"
@@ -7,15 +7,18 @@ requires-python = ">=3.14"
 dependencies = []
 
 [project.scripts]
-detect-raids = "detect_and_extract_raids:main"
+detect-raids = "raidex.cli:main"
 
 [tool.uv]
 package = true
+dev-dependencies = ["pytest>=8"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["."]
-only-include = ["detect_and_extract_raids.py"]
+packages = ["raidex"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
