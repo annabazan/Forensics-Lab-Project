@@ -4,48 +4,67 @@ This file provides guidance to LLM when working with code in this repository.
 
 ## Project Overview
 
-Single-file forensic tool that auto-detects RAID configurations from E01 disk images, reconstructs arrays, and extracts user data. Targets Linux md RAID, Windows LDM/Dynamic Disk, and hardware RAID controllers (RAID 0/1/5, left-symmetric layout for RAID 5). No prior knowledge of disk grouping or RAID parameters required.
+Forensic tool that auto-detects RAID configurations from E01 disk images, reconstructs arrays, and extracts user data. Targets Linux md RAID, Windows LDM/Dynamic Disk, and hardware RAID controllers (RAID 0/1/5, left-symmetric layout for RAID 5). No prior knowledge of disk grouping or RAID parameters required.
 
 ## Commands
 
 ```bash
 # Run directly
-python detect_and_extract_raids.py [input_dir] [-o output_dir] [--keep-raw]
+uv run detect-raids [input_dir] [-o output_dir] [--keep-raw] [-v] [-q]
 
-# Or via installed entry point (after uv sync)
-uv sync
-detect-raids [input_dir] [-o output_dir] [--keep-raw]
+# Or via module
+uv run python -m raidex [input_dir] [-o output_dir]
+
+# Run tests
+uv run pytest tests/
 ```
 
-No test suite exists. Validation: `sudo ./gen_test_data.sh` generates a flat `test_data/` directory with all E01 files, then `python detect_and_extract_raids.py test_data/` one-shots the full auto-detection pipeline.
+Validation: `sudo ./gen_test_data.sh` generates `test_data/` with E01 files, then `uv run detect-raids test_data/` runs the full pipeline.
 
 ## System Dependencies
 
 Requires these CLI tools on PATH (not Python packages):
 - `ewfmount` / `fusermount` — from libewf, for mounting E01 images via FUSE
-- `fls`, `icat`, `mmls`, `fsstat` — from sleuthkit, for filesystem traversal and extraction
+- `fls`, `icat`, `mmls`, `fsstat` — from sleuthkit, for filesystem traversal
 
 ## Architecture
 
-Everything lives in `detect_and_extract_raids.py`. The pipeline runs in three phases:
+The `raidex/` package runs a 3-phase pipeline:
 
-1. **Mount & Classify** — each E01 is FUSE-mounted via `EwfMount` context manager, then probed in order: `probe_md()` → `probe_ldm()` → `probe_standalone()`. Classification determines disk type.
+1. **Mount & Classify** (`pipeline.py` + `probes/`) — each E01 is FUSE-mounted via `EwfMount`, then probed: `probe_md()` -> `probe_ldm()` -> `probe_standalone()` -> unknown.
 
-2. **Group** — disks are grouped by md UUID or LDM disk-group GUID.
+2. **Group** (`pipeline.py` + `probes/hardware.py`) — disks grouped by md UUID, LDM GUID, or file size (hardware RAID). Standalone mirrors detected by content comparison.
 
-3. **Reconstruct & Extract** — `handle_md_group()` or `handle_ldm_group()` reconstructs RAID 5 via `reconstruct_raid5_left_symmetric()`, then `extract_files_from_image()` pulls files using sleuthkit's fls/icat.
+3. **Reconstruct & Extract** (`handlers/` + `reconstruction/` + `extraction.py`) — each group dispatched to its handler, which reconstructs the array and extracts files.
 
-Key internals:
-- md superblock v1.2 is parsed from raw bytes at offset 4096 (`probe_md`)
-- LDM PRIVHEAD is at sector 6; VMDB/VBLK database is parsed from the last 2 MiB of disk (`parse_ldm_vmdb`)
-- Disk ordering: md uses role from superblock; LDM matches per-disk GUIDs from PRIVHEAD against VMDB Disk records. Falls back to brute-force permutation if VMDB fails.
-- Degraded arrays (one missing disk) are rebuilt via XOR of remaining disks during reconstruction
-- Stripe size auto-detection tries common Windows sizes (16–512 KiB) against fsstat validation
-- Hardware RAID (no metadata): disks classified as "unknown" are clustered by file size. Each group runs through full RAID 5 → RAID 0 → degraded RAID 5, validated with fsstat+fls. RAID 1 mirrors are detected among standalone-classified disks via content sampling. CLI `--hw-*` flags allow manual override.
+### Module Map
+
+- `cli.py` — argparse, logging setup, entry point
+- `pipeline.py` — 3-phase orchestrator, ExitStack for mount lifecycle
+- `mounting.py` — EwfMount context manager
+- `probes/` — disk type detection (md superblock, LDM PRIVHEAD/VMDB, standalone FS, hardware brute-force)
+- `handlers/` — group processing (md, ldm, standalone, hardware)
+- `reconstruction/` — RAID 0/5 data reassembly, order validation
+- `parsers/` — partition tables (mmls + GPT), filesystem signatures
+- `extraction.py` — fls/icat file extraction
+- `util.py` — shared helpers, constants
+- `types.py` — TypedDicts for classified disk data
+
+### Dependency Flow
+
+```
+cli -> pipeline -> handlers -> {reconstruction, extraction, probes}
+                            -> parsers
+                   probes -> parsers
+                   reconstruction -> util (for subprocess)
+                   all modules -> util
+```
 
 ## Conventions
 
-- Python 3.14+, stdlib only (no third-party Python dependencies)
-- `uv` for package management
-- All subprocess calls go through the `run()` helper
+- Python 3.14+, stdlib only (no third-party runtime deps)
+- `uv` for package management, `pytest` for testing
+- All subprocess calls go through `util.run()`
 - Filesystem detection uses raw byte signatures, not external tools
+- Logging via `logging` module; `print()` only for transient progress bars
+- Type hints throughout; TypedDicts for classified disk data
