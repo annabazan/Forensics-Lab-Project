@@ -909,6 +909,62 @@ def detect_stripe_size(ordered_paths, data_offset_bytes, n_columns):
 # ─── Hardware RAID Detection ─────────────────────────────────────────────
 
 
+def _detect_standalone_mirrors(groups):
+    """Detect RAID 1 mirrors among standalone-classified disks.
+
+    Standalone disks with identical raw file sizes and matching content
+    samples (first + last 1 MiB) are reclassified as hardware RAID groups.
+    """
+    standalone_keys = [k for k in groups if k[0] == 'standalone']
+    if len(standalone_keys) < 2:
+        return groups
+
+    size_buckets = {}
+    for key in standalone_keys:
+        d = groups[key][0]
+        try:
+            size = os.path.getsize(d['raw'])
+        except OSError:
+            continue
+        size_buckets.setdefault(size, []).append(key)
+
+    SAMPLE = 1024 * 1024  # 1 MiB
+
+    hw_idx = max(
+        (int(k[1].split('_')[1]) for k in groups if k[0] == 'hardware'),
+        default=-1,
+    ) + 1
+
+    for size, keys in size_buckets.items():
+        if len(keys) < 2:
+            continue
+
+        samples = {}
+        for key in keys:
+            raw = groups[key][0]['raw']
+            try:
+                with open(raw, 'rb') as f:
+                    head = f.read(SAMPLE)
+                    f.seek(max(0, size - SAMPLE))
+                    tail = f.read(SAMPLE)
+                samples[key] = head + tail
+            except OSError:
+                continue
+
+        if len(samples) < 2:
+            continue
+
+        vals = list(samples.values())
+        if all(v == vals[0] for v in vals[1:]):
+            mirror_disks = []
+            for key in samples:
+                mirror_disks.extend(groups.pop(key))
+            groups[('hardware', f'group_{hw_idx}')] = mirror_disks
+            hw_idx += 1
+
+    return groups
+
+
 def detect_hardware_raid_groups(classified):
     """Cluster unknown disks by file size into candidate hardware RAID groups."""
     unknowns = [d for d in classified if d['class'] == 'unknown']
@@ -1641,6 +1697,9 @@ def main():
                   if k[0] != 'unknown' or k[1] not in hw_disk_e01s}
         for i, hg in enumerate(hw_groups):
             groups[('hardware', f'group_{i}')] = hg
+
+    # Detect RAID 1 mirrors among standalone disks
+    groups = _detect_standalone_mirrors(groups)
 
     print(f"\n{'='*60}")
     print(f"Phase 2: Identified {len(groups)} disk group(s)")
